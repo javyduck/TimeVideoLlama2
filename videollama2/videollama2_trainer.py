@@ -341,30 +341,30 @@ class VideoLLaMA2Trainer(Trainer):
             loss = loss_fct(shift_logits, shift_labels)
 
             # Check if time token processing is enabled
-            if getattr(model, 'mm_use_time_token', False) and hasattr(model, 'time_mlp'):
-                # Access hidden states; ensure output_hidden_states=True during model config
-                last_hidden_state = outputs.hidden_states[-1]
-                # Create mask for labels within the float token ID range
+#             if getattr(model, 'mm_use_time_token', False) and hasattr(model, 'time_mlp'):
+#                 # Access hidden states; ensure output_hidden_states=True during model config
+#                 last_hidden_state = outputs.hidden_states[-1]
+#                 # Create mask for labels within the float token ID range
 
-                if float_mask.any():
-                    # Extract the last hidden states for tokens needing fractional adjustment
-                    last_hidden_state = last_hidden_state[..., :-1, :].reshape(-1, 4096)
-                    float_hidden_states = last_hidden_state[float_mask]
+#                 if float_mask.any():
+#                     # Extract the last hidden states for tokens needing fractional adjustment
+#                     last_hidden_state = last_hidden_state[..., :-1, :].reshape(-1, 4096)
+#                     float_hidden_states = last_hidden_state[float_mask]
 
-                    # Calculate the fractional parts using time_mlp
-                    predicted_frac_part = model.time_mlp(float_hidden_states)
+#                     # Calculate the fractional parts using time_mlp
+#                     predicted_frac_part = model.time_mlp(float_hidden_states)
                     
-                    # Get the integer parts from logits
-                    loss += loss_fct(shift_logits[float_mask], shift_labels[float_mask])
+#                     # Get the integer parts from logits
+#                     loss += loss_fct(shift_logits[float_mask], shift_labels[float_mask])
 
-                    # Compute MSE loss for the combined predictions
-#                     true_labels = frac[float_mask].unsqueeze(-1)
-                    loss_mse = nn.MSELoss()
-#                     additional_loss = loss_mse(combined_predictions, true_labels)
-                    additional_loss = loss_mse(predicted_frac_part, frac.to(dtype=predicted_frac_part.dtype).unsqueeze(-1))
+#                     # Compute MSE loss for the combined predictions
+# #                     true_labels = frac[float_mask].unsqueeze(-1)
+#                     loss_mse = nn.MSELoss()
+# #                     additional_loss = loss_mse(combined_predictions, true_labels)
+#                     additional_loss = loss_mse(predicted_frac_part, frac.to(dtype=predicted_frac_part.dtype).unsqueeze(-1))
     
-                    # Add the MSE loss to the main loss
-                    loss += additional_loss
+#                     # Add the MSE loss to the main loss
+#                     loss += additional_loss
                     
 #             print(f"total loss: {loss.item():.2f}")
         # Return outputs along with the loss if specified

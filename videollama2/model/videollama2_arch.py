@@ -26,7 +26,6 @@ from .multimodal_projector.builder import build_vision_projector
 from ..mm_utils import get_anyres_image_grid_shape
 from ..constants import NUM_FRAMES, IGNORE_INDEX, IMAGE_TOKEN_INDEX, DEFAULT_IMAGE_PATCH_TOKEN, DEFAULT_IM_START_TOKEN, DEFAULT_IM_END_TOKEN,DEFAULT_MMODAL_PATCH_TOKEN, DEFAULT_MMODAL_START_TOKEN, DEFAULT_MMODAL_END_TOKEN, MMODAL_TOKEN_INDEX
 
-
 class Videollama2MetaModel:
 
     def __init__(self, config):
@@ -70,6 +69,8 @@ class Videollama2MetaModel:
         self.config.mm_vision_select_layer = mm_vision_select_layer
         self.config.mm_vision_select_feature = mm_vision_select_feature
         
+        self.mm_projector = build_vision_projector(self.config)
+        
         if getattr(self, 'mm_projector', None) is None:
             self.mm_projector = build_vision_projector(self.config)
         else:
@@ -80,7 +81,10 @@ class Videollama2MetaModel:
         if pretrain_mm_mlp_adapter is not None:
             if os.path.exists(pretrain_mm_mlp_adapter):
                 is_local = True
-                mm_projector_weights = torch.load(pretrain_mm_mlp_adapter, map_location='cpu')
+                if os.path.isdir(pretrain_mm_mlp_adapter):
+                    mm_projector_weights = load_mm_projector(pretrain_mm_mlp_adapter)
+                else:
+                    mm_projector_weights = torch.load(pretrain_mm_mlp_adapter, map_location='cpu')
             else:
                 # Support loading projector weights from remote HuggingFace model hub
                 is_local = False
