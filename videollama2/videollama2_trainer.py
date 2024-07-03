@@ -264,18 +264,18 @@ class VideoLLaMA2Trainer(Trainer):
             
             
     def compute_loss(self, model, inputs, return_outputs=False):
-        labels = inputs.get('labels')
-        if getattr(model, 'mm_use_time_token', False) and hasattr(model, 'time_mlp'):
-            float_mask = (model.float_token_id_start * 100 <= labels) & (labels <= model.float_token_id_end * 100)
-            float_indices = labels[float_mask]
-            frac = (float_indices % 100) / 100
-            lower_indices = (float_indices // 100).long()  # Remove the last two digits to get the base integer part
-            upper_indices = lower_indices + 1  # The next integer
-            labels[float_mask] = lower_indices
-        inputs.update({
-            'labels': labels,
-            })
-        return super(VideoLLaMA2Trainer, self).compute_loss(model, inputs, return_outputs)
+#         labels = inputs.get('labels')
+#         if getattr(model, 'mm_use_time_token', False) and hasattr(model, 'time_mlp'):
+#             float_mask = (model.float_token_id_start * 100 <= labels) & (labels <= model.float_token_id_end * 100)
+#             float_indices = labels[float_mask]
+#             frac = (float_indices % 100) / 100
+#             lower_indices = (float_indices // 100).long()  # Remove the last two digits to get the base integer part
+#             upper_indices = lower_indices + 1  # The next integer
+#             labels[float_mask] = lower_indices
+#         inputs.update({
+#             'labels': labels,
+#             })
+#         return super(VideoLLaMA2Trainer, self).compute_loss(model, inputs, return_outputs)
             
         # Forward pass through the model
         input_ids = inputs.get('input_ids')
@@ -340,85 +340,33 @@ class VideoLLaMA2Trainer(Trainer):
             loss_fct = nn.CrossEntropyLoss()
             loss = loss_fct(shift_logits, shift_labels)
 
-#             # Check if time token processing is enabled
-#             if getattr(model, 'mm_use_time_token', False) and hasattr(model, 'time_mlp'):
-#                 # Access hidden states; ensure output_hidden_states=True during model config
-#                 last_hidden_state = outputs.hidden_states[-1]
-#                 # Create mask for labels within the float token ID range
+            # Check if time token processing is enabled
+            if getattr(model, 'mm_use_time_token', False) and hasattr(model, 'time_mlp'):
+                # Access hidden states; ensure output_hidden_states=True during model config
+                last_hidden_state = outputs.hidden_states[-1]
+                # Create mask for labels within the float token ID range
 
-#                 if float_mask.any():
-#                     # Extract the last hidden states for tokens needing fractional adjustment
-#                     last_hidden_state = last_hidden_state[..., :-1, :].contiguous().view(-1, 4096)
-#                     float_hidden_states = last_hidden_state[float_mask]
+                if float_mask.any():
+                    # Extract the last hidden states for tokens needing fractional adjustment
+                    last_hidden_state = last_hidden_state[..., :-1, :].reshape(-1, 4096)
+                    float_hidden_states = last_hidden_state[float_mask]
 
-#                     # Calculate the fractional parts using time_mlp
-#                     predicted_frac_part = model.time_mlp(float_hidden_states)
+                    # Calculate the fractional parts using time_mlp
+                    predicted_frac_part = model.time_mlp(float_hidden_states)
+                    
+                    # Get the integer parts from logits
+                    loss += loss_fct(shift_logits[float_mask], shift_labels[float_mask])
 
-#                     # Get the integer parts from logits
-#                     predicted_int_part = shift_logits.argmax(dim=-1)[float_mask]
-
-#                     # Combine integer and fractional parts
-#                     combined_predictions = predicted_int_part.float() + predicted_frac_part
-
-#                     # Compute MSE loss for the combined predictions
-# #                     true_labels = frac[float_mask].unsqueeze(-1)
-#                     loss_mse = nn.MSELoss()
-# #                     additional_loss = loss_mse(combined_predictions, true_labels)
-#                     additional_loss = loss_mse(predicted_frac_part, frac[float_mask].unsqueeze(-1))
+                    # Compute MSE loss for the combined predictions
+#                     true_labels = frac[float_mask].unsqueeze(-1)
+                    loss_mse = nn.MSELoss()
+#                     additional_loss = loss_mse(combined_predictions, true_labels)
+                    additional_loss = loss_mse(predicted_frac_part, frac.to(dtype=predicted_frac_part.dtype).unsqueeze(-1))
     
-#                     # Add the MSE loss to the main loss
-#                     loss += additional_loss
+                    # Add the MSE loss to the main loss
+                    loss += additional_loss
                     
 #             print(f"total loss: {loss.item():.2f}")
         # Return outputs along with the loss if specified
         return (loss, outputs) if return_outputs else loss
 
-
-#     def compute_loss(self, model, inputs, return_outputs=False):
-#         labels = inputs.pop('labels', None)
-#         outputs = model(**inputs)
-#         logits = outputs.logits
-
-#         loss = None
-#         if labels is not None:
-#             # Shift so that tokens < n predict n
-#             shift_logits = logits[..., :-1, :].contiguous()
-#             shift_labels = labels[..., 1:].contiguous()
-
-#             # Flatten the tokens
-#             shift_logits = shift_logits.view(-1, self.config.vocab_size)
-#             shift_labels = shift_labels.view(-1)
-
-#             # Ensure tensors are on the same device
-#             shift_labels = shift_labels.to(shift_logits.device)
-
-#             # Calculate Cross-Entropy Loss
-#             loss_fct = nn.CrossEntropyLoss()
-#             loss = loss_fct(shift_logits, shift_labels)
-
-#             # Check if time token processing is enabled
-#             if getattr(model, 'mm_use_time_token', False) and hasattr(model, 'time_mlp'):
-#                 last_hidden_state = outputs.hidden_states[-1]
-#                 # Create a mask for each position in the batch
-#                 batch_size, seq_length = shift_labels.size(0), shift_labels.size(1)
-#                 float_mask = (model.float_token_id_start <= shift_labels) & (shift_labels <= model.float_token_id_end)
-
-#                 # Adjust mask to be 2D for correct indexing
-#                 float_mask = float_mask.view(batch_size, -1)
-
-#                 # Loop through each batch element to process only valid entries
-#                 for i in range(batch_size):
-#                     batch_float_mask = float_mask[i]
-#                     if batch_float_mask.any():
-#                         float_hidden_states = last_hidden_state[i, batch_float_mask]
-#                         predicted_frac_part = model.time_mlp(float_hidden_states).squeeze()
-#                         true_frac_part = shift_labels[i, batch_float_mask].float().frac()
-
-#                         # Compute MSE loss for fractional parts
-#                         loss_mse = nn.MSELoss()
-#                         additional_loss = loss_mse(predicted_frac_part, true_frac_part)
-
-#                         # Add to the main loss
-#                         loss += additional_loss
-
-#         return (loss, outputs) if return_outputs else loss

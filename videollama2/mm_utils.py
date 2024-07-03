@@ -588,8 +588,12 @@ class TimeTokenizer:
         self.bos_token_id = tokenizer.bos_token_id
         self.pad_token_id = tokenizer.pad_token_id
         self.unk_token = tokenizer.unk_token
+        self.eos_token_id = tokenizer.eos_token_id
         self.model_max_length = tokenizer.model_max_length
         self.padding_side = tokenizer.padding_side
+        
+    def save_pretrained(self, output_dir):
+        self._tokenizer.save_pretrained(output_dir)
         
     def __call__(self, text, **kwargs):
         
@@ -682,7 +686,19 @@ class TimeTokenizer:
 #         return  interpolated_indices.tolist()
         return [int(round(num * 100)) for num in interpolated_indices.tolist()]
 
+
+    def batch_decode(self, sequences, **kwargs):
+        return [
+            self.decode(
+                seq,
+                **kwargs,
+            )
+            for seq in sequences
+        ]
+
     def decode(self, token_ids, **kwargs):
+        if not len(token_ids):
+            return ""
         
         # Ensure input is in a consistent format (using PyTorch for potential GPU support)
         if isinstance(token_ids, list):
@@ -709,14 +725,12 @@ class TimeTokenizer:
         for i in range(chunk_indices.size(0) - 1):
             chunk = token_ids[chunk_indices[i]:chunk_indices[i+1]]
             if is_float[chunk_indices[i]]:
-                
-                chunk = (chunk // 100).long() + (chunk % 100) / 100
-                
+
                 # Interpolate float values
-                base_ids = (chunk - self.float_token_id_start).long()
+                base_ids = ((chunk // 100).long() - self.float_token_id_start).long()
                 lower_bounds = torch.tensor([float(self.range_tokens[idx]) for idx in base_ids], device=device)
                 upper_bounds = torch.tensor([float(self.range_tokens[min(idx + 1, len(self.range_tokens) - 1)]) for idx in base_ids], device=device)
-                fractional_parts = chunk.frac()
+                fractional_parts = (chunk % 100) / 100
                 interpolated_floats = lower_bounds + fractional_parts * (upper_bounds - lower_bounds)
                 float_strs = [f"{num:.2f}" for num in interpolated_floats.cpu().numpy()]
                 decoded_parts.append(", ".join(float_strs))
@@ -728,5 +742,6 @@ class TimeTokenizer:
                 # Decode non-float tokens using the tokenizer (assumes moving to CPU for compatibility)
                 decoded_text = self._tokenizer.decode(chunk, **kwargs)
                 decoded_parts.append(decoded_text)
-
         return "".join(decoded_parts)
+
+    

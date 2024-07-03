@@ -70,8 +70,6 @@ class Videollama2MetaModel:
         self.config.mm_vision_select_layer = mm_vision_select_layer
         self.config.mm_vision_select_feature = mm_vision_select_feature
         
-        self.mm_projector = build_vision_projector(self.config)
-        
         if getattr(self, 'mm_projector', None) is None:
             self.mm_projector = build_vision_projector(self.config)
         else:
@@ -161,9 +159,11 @@ class Videollama2MetaForCausalLM(ABC):
     ):
         vision_tower = self.get_vision_tower()
         # NOTE: text-only situation
-        if vision_tower is None or X_modalities is None or input_ids.shape[1] == 1:
-            # if past_key_values is not None and vision_tower is not None and Xs is not None and input_ids.shape[1] == 1:
-            #    attention_mask = torch.ones((attention_mask.shape[0], past_key_values[-1][-1].shape[-2] + 1), dtype=attention_mask.dtype, device=attention_mask.device)
+        if vision_tower is None or X_modalities is None:
+            if input_ids.shape[1] == 1:
+                # Get embeddings even for a single token
+                hidden_embeddings = self.get_embed_tokens(input_ids)
+                return None, attention_mask, past_key_values, hidden_embeddings, labels
             return input_ids, attention_mask, past_key_values, None, labels
 
         Xs, keys = X_modalities

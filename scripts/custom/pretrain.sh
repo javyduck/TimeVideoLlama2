@@ -24,14 +24,14 @@ torchrun --nnodes $WORLD_SIZE \
     --master_addr=$MASTER_ADDR \
     --master_port=$MASTER_PORT \
     --node_rank $RANK \
-    videollama2/train.py \
+    videollama2/train_flash_attn.py \
     --deepspeed scripts/zero3_offload.json \
     --version v1_mistral \
     --vision_tower ./openai/clip-vit-large-patch14-336 \
     --mm_projector_type stc_connector \
     --pretrain_mm_mlp_adapter ./checkpoints/VideoLLaMA2-7B-Base/mm_projector.bin \
     --model_name_or_path mistralai/Mistral-7B-Instruct-v0.2 \
-    --pretrain_model_name_or_path ./checkpoints/VideoLLaMA2-7B \
+    --pretrain_model_name_or_path ./checkpoints/videollama2_vllava/pretrain_time_videollama2_vllava \
     --data_path   ${DATA_DIR}/final/time_conversation_bddx_train.json \
     --data_folder ${DATA_DIR}/BDDX_Processed/ \
     --freeze_backbone True \
@@ -45,7 +45,7 @@ torchrun --nnodes $WORLD_SIZE \
     --bf16 True \
     --tf32 True \
     --fp16 False \
-    --output_dir ${OUTP_DIR}/${WANDB_PROJECT}/pretrain_time_${RUN_NAME} \
+    --output_dir ${OUTP_DIR}/${WANDB_PROJECT}/pretrain_time_mlp_${RUN_NAME} \
     --num_train_epochs 2 \
     --per_device_train_batch_size $LOCAL_BATCH_SIZE \
     --per_device_eval_batch_size 4 \
