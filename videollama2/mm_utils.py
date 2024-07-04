@@ -556,7 +556,7 @@ class KeywordsStoppingCriteria(StoppingCriteria):
         return all(outputs)
     
 class TimeTokenizer:
-    def __init__(self, tokenizer, range_min=-1800, range_max=1800, bins=3600):
+    def __init__(self, tokenizer, range_min=-180, range_max=180, bins=3600):
         
         # Store the original tokenizer, the legacy has to be set to False for correct decoding
         tokenizer.legacy = False
@@ -592,26 +592,6 @@ class TimeTokenizer:
         self.model_max_length = tokenizer.model_max_length
         self.padding_side = tokenizer.padding_side
         
-    def save_pretrained(self, output_dir):
-        self._tokenizer.save_pretrained(output_dir)
-        
-    def __call__(self, text, **kwargs):
-        
-        return_tensors = kwargs.pop('return_tensors', None)  # Default to False if not specified
-            
-        # Encoding the text
-        new_input_ids = self.encode(text, **kwargs)
-        
-        # Generating an attention mask that matches the new input IDs
-        attention_mask =[1] * len(new_input_ids)
-        if return_tensors == 'pt':
-            new_input_ids = torch.tensor(new_input_ids, dtype=torch.long)
-            
-        return SimpleNamespace(**{'input_ids': new_input_ids, 'attention_mask': None})
-
-    def __len__(self):
-        return len(self._tokenizer)
-    
     def encode(self, text, **kwargs):
 
         # Split text into parts to handle both special tags and general text
@@ -744,4 +724,22 @@ class TimeTokenizer:
                 decoded_parts.append(decoded_text)
         return "".join(decoded_parts)
 
-    
+    def save_pretrained(self, output_dir):
+        self._tokenizer.save_pretrained(output_dir)
+        
+    def __call__(self, text, **kwargs):
+        
+        return_tensors = kwargs.pop('return_tensors', None)  # Default to False if not specified
+            
+        # Encoding the text
+        new_input_ids = self.encode(text, **kwargs)
+        
+        # Generating an attention mask that matches the new input IDs
+        attention_mask =[1] * len(new_input_ids)
+        if return_tensors == 'pt':
+            new_input_ids = torch.tensor(new_input_ids, dtype=torch.long)
+            
+        return SimpleNamespace(**{'input_ids': new_input_ids, 'attention_mask': None})
+
+    def __len__(self):
+        return len(self._tokenizer)

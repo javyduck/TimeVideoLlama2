@@ -499,11 +499,11 @@ class Videollama2MistralForCausalLM(MistralForCausalLM, Videollama2MetaForCausal
                 float_hidden_states = last_hidden_states[float_mask]
 
                 # Calculate the fractional parts using time_mlp
-                frac_part = self.time_mlp(float_hidden_states)
-#                 frac_part = 0
+#                 frac_part = self.time_mlp(float_hidden_states)
+                frac_part = 0
 
                 # Add the fractional part to the original next tokens in place
-                next_tokens[float_mask] = 100 * next_tokens[float_mask] + (100 * frac_part).long()
+                next_tokens[float_mask] = 100 * next_tokens[float_mask] #+ (100 * frac_part).long()
 
         return next_tokens
     
