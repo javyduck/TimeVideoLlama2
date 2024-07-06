@@ -31,10 +31,9 @@ torchrun --nnodes $WORLD_SIZE \
     --mm_projector_type stc_connector \
     --pretrain_mm_mlp_adapter ./checkpoints/VideoLLaMA2-7B-Base/mm_projector.bin \
     --model_name_or_path mistralai/Mistral-7B-Instruct-v0.2 \
-    --pretrain_model_name_or_path ./checkpoints/VideoLLaMA2-7B \
+    --pretrain_model_name_or_path ${OUTP_DIR}/${WANDB_PROJECT}/pretrain_time_${RUN_NAME} \
     --data_path   ${DATA_DIR}/final/time_conversation_bddx_train.json \
     --data_folder ${DATA_DIR}/BDDX_Processed/ \
-    --freeze_backbone True \
     --mm_vision_select_layer -2 \
     --mm_use_im_start_end False \
     --mm_use_im_patch_token False \
@@ -45,7 +44,7 @@ torchrun --nnodes $WORLD_SIZE \
     --bf16 True \
     --tf32 True \
     --fp16 False \
-    --output_dir ${OUTP_DIR}/${WANDB_PROJECT}/pretrain_time_${RUN_NAME} \
+    --output_dir ${OUTP_DIR}/${WANDB_PROJECT}/finetune_time_${RUN_NAME} \
     --num_train_epochs 2 \
     --per_device_train_batch_size $LOCAL_BATCH_SIZE \
     --per_device_eval_batch_size 4 \
@@ -54,7 +53,7 @@ torchrun --nnodes $WORLD_SIZE \
     --save_strategy "steps" \
     --save_steps 300 \
     --save_total_limit 5 \
-    --learning_rate 1e-3 \
+    --learning_rate 2e-5 \
     --weight_decay 0. \
     --warmup_ratio 0.03 \
     --lr_scheduler_type "cosine" \

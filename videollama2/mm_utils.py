@@ -556,7 +556,7 @@ class KeywordsStoppingCriteria(StoppingCriteria):
         return all(outputs)
     
 class TimeTokenizer:
-    def __init__(self, tokenizer, range_min=-180, range_max=180, bins=3600):
+    def __init__(self, tokenizer, range_min=-180, range_max=180, bins=360):
         
         # Store the original tokenizer, the legacy has to be set to False for correct decoding
         tokenizer.legacy = False

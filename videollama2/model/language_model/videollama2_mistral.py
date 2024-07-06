@@ -16,8 +16,9 @@
 from typing import List, Optional, Tuple, Union
 import torch
 import torch.nn as nn
+import numpy as np
 from torch.nn import CrossEntropyLoss
-
+import torch.nn.functional as F
 from transformers import AutoConfig, AutoModelForCausalLM, \
                          MistralConfig, MistralModel, MistralForCausalLM
 
@@ -26,25 +27,55 @@ from transformers.generation.utils import *
 
 from ..videollama2_arch import Videollama2MetaModel, Videollama2MetaForCausalLM
 
-class TimeMLP(nn.Module):
-    def __init__(self, input_dim = 4096, hidden_dim = 4096, dropout_rate=0.1):
-        super(TimeMLP, self).__init__()
-        self.linear1 = nn.Linear(input_dim, hidden_dim)
-        nn.init.xavier_uniform_(self.linear1.weight, gain=nn.init.calculate_gain('relu'))
-        self.relu = nn.ReLU()
-        self.dropout = nn.Dropout(dropout_rate)
-        self.linear2 = nn.Linear(hidden_dim, 1) 
-        nn.init.xavier_uniform_(self.linear2.weight, gain=nn.init.calculate_gain('sigmoid'))
-        self.sigmoid = nn.Sigmoid()
+class TimeEncode(nn.Module):
+    def __init__(self, num_float_tokens):
+        super(TimeEncode, self).__init__()
+        self.mlp = nn.Sequential(
+                nn.Linear(1, num_float_tokens // 4),
+                nn.ReLU(),
+                nn.Linear(num_float_tokens // 4, num_float_tokens//2),
+                nn.ReLU(),
+                nn.Linear(num_float_tokens // 2, num_float_tokens)
+            )
 
     def forward(self, x):
-        x = self.linear1(x)
-        x = self.relu(x)
-        x = self.dropout(x)
-        x = self.linear2(x)
-        x = self.sigmoid(x)
+        x = self.mlp(x)
+        x = F.softmax(x, dim=-1)
         return x
 
+class TimeDecode(nn.Module):
+    def __init__(self, input_dim = 4096):
+        super(TimeDecode, self).__init__()
+        self.mlp = nn.Sequential(
+            nn.Linear(input_dim, (input_dim)//2),  
+            nn.ReLU(),
+            nn.Linear((input_dim)//2, (input_dim)//4),  
+            nn.ReLU(),
+            nn.Linear((input_dim)//4, 1)
+            )
+        
+    def forward(self, x):
+        x = self.mlp(x)
+        return x
+    
+# class TimeDecode(nn.Module):
+#     def __init__(self, input_dim = 4096, num_float_tokens = 100, hidden_dim = 1024):
+#         super(TimeDecode, self).__init__()
+#         self.mlp = nn.Sequential(
+#             nn.Linear(input_dim+hidden_dim, (input_dim+hidden_dim)//2),  
+#             nn.ReLU(),
+#             nn.Linear((input_dim+hidden_dim)//2, (input_dim+hidden_dim)//4),  
+#             nn.ReLU(),
+#             nn.Linear((input_dim+hidden_dim)//4, 1)
+#             )
+#         self.matrix_LP = nn.Parameter(torch.randn(num_float_tokens, hidden_dim))
+        
+#     def forward(self, x, probs):
+#         selected_row = torch.matmul(probs, self.matrix_LP)
+#         x = torch.cat((x, selected_row), dim=-1)
+#         x = self.mlp(x)
+#         return x
+    
 class Videollama2MistralConfig(MistralConfig):
     model_type = "videollama2_mistral"
 
@@ -53,7 +84,6 @@ class Videollama2MistralModel(Videollama2MetaModel, MistralModel):
 
     def __init__(self, config: MistralConfig):
         super(Videollama2MistralModel, self).__init__(config)
-
 
 class Videollama2MistralForCausalLM(MistralForCausalLM, Videollama2MetaForCausalLM):
     config_class = Videollama2MistralConfig
@@ -68,9 +98,13 @@ class Videollama2MistralForCausalLM(MistralForCausalLM, Videollama2MetaForCausal
         
         ## load time mlp ##
         if self.mm_use_time_token:
-            self.time_mlp = TimeMLP()
             self.float_token_id_start = config.float_token_id_start
             self.float_token_id_end = config.float_token_id_end
+            self.float_encode = TimeEncode(self.float_token_id_end-self.float_token_id_start+1)
+            self.float_decode = TimeDecode(4096)
+            self.range_tokens = [f"{x:.2f}" for x in np.linspace(-180, 180, 360+1)]
+            self.sorted_tokens = sorted(float(val) for val in self.range_tokens)
+            self.temperature = 10.0
             
         # Initialize weights and apply final processing
         self.post_init()
@@ -177,7 +211,6 @@ class Videollama2MistralForCausalLM(MistralForCausalLM, Videollama2MetaForCausal
         logits_warper: Optional[LogitsProcessorList] = None,
         **model_kwargs,
     ) -> Union[GenerateNonBeamOutput, torch.LongTensor]:
-        print("!!!!!! calling sample")
         
         # init values
         pad_token_id = generation_config.pad_token_id
@@ -499,53 +532,100 @@ class Videollama2MistralForCausalLM(MistralForCausalLM, Videollama2MetaForCausal
                 float_hidden_states = last_hidden_states[float_mask]
 
                 # Calculate the fractional parts using time_mlp
-#                 frac_part = self.time_mlp(float_hidden_states)
-                frac_part = 0
+                frac_part, prob = self.float_decode(float_hidden_states)
+#                 frac_part = 0
 
                 # Add the fractional part to the original next tokens in place
-                next_tokens[float_mask] = 100 * next_tokens[float_mask] #+ (100 * frac_part).long()
-
+                next_tokens[float_mask] = self.float_to_token(frac_part)
         return next_tokens
     
     def get_embed_tokens(self, token_ids):
         # Convert token_ids to a torch tensor if it's not already
         if self.mm_use_time_token and len(token_ids):
 #             if not isinstance(token_ids, torch.Tensor):
-#                 token_ids = torch.tensor(token_ids, dtype = torch.long).to(self.model.device)
+#                 token_ids = torch.tensor(token_ids, dtype=torch.long).to(self.model.device)
 
             # Identify the indices with floating token IDs
             is_float = (self.float_token_id_start * 100 <= token_ids) & (token_ids <= self.float_token_id_end * 100)
 
             # Process floating token indices
             if is_float.any():
+                # Allocate a tensor for embeddings that matches the input tokens
+                embeddings = torch.zeros(*token_ids.shape, 4096, device=token_ids.device, dtype=self.model.embed_tokens.weight.dtype)
+
+                # Handle non-floating tokens normally
+                if (~is_float).any():
+                    embeddings[~is_float] += self.model.embed_tokens(token_ids[~is_float])
+
+                # Handle floating tokens
                 float_indices = token_ids[is_float]
-
-                # Extracting fractional parts
-                frac = (float_indices % 100) / 100
-
-                # Calculating lower and upper indices based on the float_indices
-                lower_indices = (float_indices // 100).long()  # Remove the last two digits to get the base integer part
-                upper_indices = lower_indices + 1  # The next integer
-
-#                 frac = float_indices.frac()
-#                 lower_indices = float_indices.floor().long()
-#                 upper_indices = float_indices.ceil().long()
-
-                new_token_ids = token_ids.clone()
-                new_token_ids[is_float] = lower_indices
-                embeddings = self.model.embed_tokens(new_token_ids)
-
-                # Retrieve embeddings for the lower and upper indices
-                lower_embeddings = self.model.embed_tokens(lower_indices)
-                upper_embeddings = self.model.embed_tokens(upper_indices)
-                # Linear interpolation for embeddings
-                interpolated_embeddings = frac.unsqueeze(-1) * (upper_embeddings - lower_embeddings)
-                # Add the interpolated embeddings to the base embeddings for floating-point indices
-                embeddings[is_float] += interpolated_embeddings
+                float_input = self.token_to_float(float_indices)
+                
+                weights = self.float_encode(float_input.unsqueeze(-1))  # Get linear weights for each base embedding
+                # Get the base embeddings
+                embedding_float_base = self.model.embed_tokens(torch.arange(self.float_token_id_start, self.float_token_id_end + 1, device=self.model.device))
+                
+                # Compute weighted sum of base embeddings
+                float_embedding = torch.matmul(weights, embedding_float_base)
+                embeddings[is_float] += float_embedding
                 return embeddings
             else:
                 return self.model.embed_tokens(token_ids)
         else:
             return self.model.embed_tokens(token_ids)
+
+        
+    def token_to_float(self, token_ids):
+        device = token_ids.device
+        
+        # Ensure token_ids is a 2D tensor even if it's not batched
+        if token_ids.ndim == 1:
+            token_ids = token_ids.unsqueeze(0)  # Reshape to [1, n]
+
+        # Calculate base indices for each token
+        base_ids = (token_ids // 100).long() - self.float_token_id_start
+
+        # Collect lower and upper bounds from pre-defined ranges
+        lower_bounds = torch.tensor([float(self.range_tokens[idx]) for idx in base_ids.flatten()], device=device).view_as(base_ids)
+        upper_bounds = torch.tensor([float(self.range_tokens[min(idx + 1, len(self.range_tokens) - 1)]) for idx in base_ids.flatten()], device=device).view_as(base_ids)
+
+        # Calculate fractional parts for interpolation
+        fractional_parts = (token_ids % 100).float() / 100
+
+        # Perform interpolation
+        interpolated_floats = lower_bounds + fractional_parts * (upper_bounds - lower_bounds)
+
+        # Match the original shape of token_ids
+        if interpolated_floats.ndim == 2 and interpolated_floats.shape[0] == 1:
+            interpolated_floats = interpolated_floats.squeeze(0)  # Remove batch dimension if it was originally unbatched
+
+        return interpolated_floats
+    
+    def float_to_token(self, floats):
+        # Clip the input values to be within the specified range
+        floats_clipped = torch.clamp(floats, min=-180, max=180)
+
+        # Convert range_tokens to a tensor if not already
+        range_tokens_floats = [float(token) for token in self.range_tokens]
+        range_tokens_tensor = torch.tensor(range_tokens_floats, device=floats.device, dtype=torch.float32)
+
+        # Find the indices for each number using searchsorted
+        positions = torch.searchsorted(range_tokens_tensor, floats_clipped, right=True) - 1
+        positions = torch.clamp(positions, 0, len(self.range_tokens) - 2)  # Ensure indices are within the bounds
+
+        # Lower and upper token values
+        lower_tokens = range_tokens_tensor[positions]
+        upper_tokens = range_tokens_tensor[positions + 1]
+
+        # Calculate the interpolated indices
+        lower_indices = self.float_token_id_start + positions
+
+        # Compute the interpolated token indices
+        fractional_part = (floats_clipped - lower_tokens) / (upper_tokens - lower_tokens)
+        interpolated_indices = (100 * (lower_indices + fractional_part)).long()
+
+        return interpolated_indices
+
+        
 AutoConfig.register("videollama2_mistral", Videollama2MistralConfig)
 AutoModelForCausalLM.register(Videollama2MistralConfig, Videollama2MistralForCausalLM)

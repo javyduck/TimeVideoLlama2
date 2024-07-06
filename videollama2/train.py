@@ -49,7 +49,6 @@ from videollama2.constants import NUM_FRAMES, IGNORE_INDEX, MMODAL_TOKEN_INDEX, 
 from videollama2.videollama2_trainer import VideoLLaMA2Trainer
 from videollama2.model import *
 from videollama2.mm_utils import tokenizer_MMODAL_token, tokenizer_image_token, expand2square, process_video, process_image, TimeTokenizer
-
 local_rank = None
 
 
@@ -912,7 +911,7 @@ def train(attn_implementation=None):
         vision_tower = model.get_vision_tower()
         
         vision_tower.to(dtype=torch.float16 if training_args.fp16 else (torch.bfloat16 if training_args.bf16 else torch.float32), device=training_args.device)
-
+        
         data_args.image_processor = vision_tower.image_processor
         data_args.video_processor = vision_tower.video_processor if hasattr(vision_tower, "video_processor") else vision_tower.image_processor
 
@@ -957,11 +956,11 @@ def train(attn_implementation=None):
                     module = module.to(torch.bfloat16)
             if 'norm' in name:
                 module = module.to(torch.float32)
-            if 'lm_head' in name or 'embed_tokens' in name or 'time_mlp' in name:
+            if 'lm_head' in name or 'embed_tokens' in name or 'float_' in name:
                 if hasattr(module, 'weight'):
                     if training_args.bf16 and module.weight.dtype == torch.float32:
                         module = module.to(torch.bfloat16)
-
+    
     print("Current model:", model)
     
     data_module = make_supervised_data_module(tokenizer=tokenizer, data_args=data_args)

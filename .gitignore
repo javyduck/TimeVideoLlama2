@@ -59,4 +59,4 @@ public_models/
 
 checkpoints/
 openai/
-video_process/
+*.mp4

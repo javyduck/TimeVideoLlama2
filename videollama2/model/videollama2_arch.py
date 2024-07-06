@@ -330,7 +330,9 @@ class Videollama2MetaForCausalLM(ABC):
                     p.requires_grad = True
                 for p in self.get_output_embeddings().parameters():
                     p.requires_grad = True
-                for p in self.time_mlp.parameters():
+                for p in self.float_encode.parameters():
+                    p.requires_grad = True
+                for p in self.float_decode.parameters():
                     p.requires_grad = True
                     
         if model_args.mm_use_im_patch_token:

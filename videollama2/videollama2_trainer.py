@@ -4,6 +4,7 @@ from typing import List, Optional
 
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 from torch.utils.data import Sampler
 
 from transformers import Trainer
@@ -262,7 +263,7 @@ class VideoLLaMA2Trainer(Trainer):
         else:
             super(VideoLLaMA2Trainer, self)._save(output_dir, state_dict)
             
-            
+    @torch.autocast(device_type="cuda")
     def compute_loss(self, model, inputs, return_outputs=False):
 #         labels = inputs.get('labels')
 #         if getattr(model, 'mm_use_time_token', False) and hasattr(model, 'time_mlp'):
@@ -315,12 +316,12 @@ class VideoLLaMA2Trainer(Trainer):
 
         outputs = model(**inputs)
         logits = outputs.logits  # Directly access logits assuming it's always returned
-        loss = None
+        loss = 0
         if labels is not None:
             # Shift so that tokens < n predict n
             shift_logits = logits[..., :-1, :].contiguous()
             shift_labels = labels[..., 1:].contiguous()
-                
+
             # Flatten the tokens
             shift_logits = shift_logits.view(-1, model.get_model().config.vocab_size)
             shift_labels = shift_labels.view(-1)
@@ -328,45 +329,46 @@ class VideoLLaMA2Trainer(Trainer):
             # Ensure tensors are on the same device
             shift_labels = shift_labels.to(shift_logits.device)
             
-            if getattr(model, 'mm_use_time_token', False) and hasattr(model, 'time_mlp'):
+            if getattr(model, 'mm_use_time_token', False):
                 float_mask = (model.float_token_id_start * 100 <= shift_labels) & (shift_labels <= model.float_token_id_end * 100)
-                float_indices = shift_labels[float_mask]
-                frac = (float_indices % 100) / 100
-                lower_indices = (float_indices // 100).long()  # Remove the last two digits to get the base integer part
-                upper_indices = lower_indices + 1  # The next integer
-                shift_labels[float_mask] = lower_indices
+
+                if float_mask.any():
+                    last_hidden_state = outputs.hidden_states[-1]
+                    last_hidden_state = last_hidden_state[..., :-1, :].reshape(-1, last_hidden_state.size(-1))
+                    float_hidden_states = last_hidden_state[float_mask]
+
+                    # Decode to get the predicted floating point values and logits for the Gumbel softmax
+#                     probs = F.gumbel_softmax(shift_logits[float_mask, model.float_token_id_start:model.float_token_id_end+1], tau=model.temperature, hard=True, dim=-1)
+#                     predicted_float = model.float_decode(float_hidden_states, probs)
+                    predicted_float = model.float_decode(float_hidden_states)
+                    shift_ground_float = model.token_to_float(shift_labels[float_mask].unsqueeze(-1))
+
+                    # Compute MSE loss for the floating point predictions
+                    loss_mse = nn.MSELoss()
+                    mse_loss = loss_mse(predicted_float, shift_ground_float)
+                    loss += mse_loss
+
+                    # Softmax over the logits within the range
+                    probs = F.softmax(shift_logits[float_mask], dim=-1)
+
+                    # Prepare target indices for log-probability extraction
+                    target_log_probs = probs[:, model.float_token_id_start:model.float_token_id_end+1]
+
+                    # Compute the negative log likelihood loss
+                    nll_loss = -torch.mean(torch.log(target_log_probs.sum(-1)))
+                    loss += nll_loss
+
+            # Calculate Cross-Entropy Loss for the non-float part
+            non_float_mask = ~float_mask
+            if non_float_mask.any():
+                loss_fct = nn.CrossEntropyLoss()
+                loss += loss_fct(shift_logits[non_float_mask], shift_labels[non_float_mask])
                 
-            # Calculate Cross-Entropy Loss
-            loss_fct = nn.CrossEntropyLoss()
-            loss = loss_fct(shift_logits, shift_labels)
-
-            # Check if time token processing is enabled
-#             if getattr(model, 'mm_use_time_token', False) and hasattr(model, 'time_mlp'):
-#                 # Access hidden states; ensure output_hidden_states=True during model config
-#                 last_hidden_state = outputs.hidden_states[-1]
-#                 # Create mask for labels within the float token ID range
-
-#                 if float_mask.any():
-#                     # Extract the last hidden states for tokens needing fractional adjustment
-#                     last_hidden_state = last_hidden_state[..., :-1, :].reshape(-1, 4096)
-#                     float_hidden_states = last_hidden_state[float_mask]
-
-#                     # Calculate the fractional parts using time_mlp
-#                     predicted_frac_part = model.time_mlp(float_hidden_states)
+#             if shift_logits.device == torch.device('cuda:0'):
+#                 model.temperature = max(model.temperature - 0.05/4, 0.01)
+#                 print("Updating temp to", model.temperature)
                     
-#                     # Get the integer parts from logits
-#                     loss += loss_fct(shift_logits[float_mask], shift_labels[float_mask])
-
-#                     # Compute MSE loss for the combined predictions
-# #                     true_labels = frac[float_mask].unsqueeze(-1)
-#                     loss_mse = nn.MSELoss()
-# #                     additional_loss = loss_mse(combined_predictions, true_labels)
-#                     additional_loss = loss_mse(predicted_frac_part, frac.to(dtype=predicted_frac_part.dtype).unsqueeze(-1))
-    
-#                     # Add the MSE loss to the main loss
-#                     loss += additional_loss
-                    
-#             print(f"total loss: {loss.item():.2f}")
+            print(f"total loss: {loss.item():.2f}, nll_loss: {nll_loss.item():.2f}, mse loss: {mse_loss.item():.2f}")
         # Return outputs along with the loss if specified
         return (loss, outputs) if return_outputs else loss
 
