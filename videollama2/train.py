@@ -808,6 +808,7 @@ def train(attn_implementation=None):
                 do_sample=True,
                 **bnb_model_from_pretrained_args
             )
+            save_directory = training_args.output_dir
             
         elif 'mixtral' in model_args.model_name_or_path.lower():
             config = transformers.AutoConfig.from_pretrained(pretrain_model_name_or_path, trust_remote_code=True)
@@ -960,19 +961,19 @@ def train(attn_implementation=None):
                 if hasattr(module, 'weight'):
                     if training_args.bf16 and module.weight.dtype == torch.float32:
                         module = module.to(torch.bfloat16)
-    
+                    
     print("Current model:", model)
     
     data_module = make_supervised_data_module(tokenizer=tokenizer, data_args=data_args)
     # select a Trainer
     trainer = VideoLLaMA2Trainer(model=model, tokenizer=tokenizer, args=training_args, **data_module)
-
+    
     if list(pathlib.Path(training_args.output_dir).glob("checkpoint-*")):
         trainer.train(resume_from_checkpoint=True)
     else:
         trainer.train()
     trainer.save_state()
-
+    
     model.config.use_cache = True
 
     if training_args.lora_enable:

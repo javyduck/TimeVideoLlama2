@@ -263,20 +263,7 @@ class VideoLLaMA2Trainer(Trainer):
         else:
             super(VideoLLaMA2Trainer, self)._save(output_dir, state_dict)
             
-    @torch.autocast(device_type="cuda")
     def compute_loss(self, model, inputs, return_outputs=False):
-#         labels = inputs.get('labels')
-#         if getattr(model, 'mm_use_time_token', False) and hasattr(model, 'time_mlp'):
-#             float_mask = (model.float_token_id_start * 100 <= labels) & (labels <= model.float_token_id_end * 100)
-#             float_indices = labels[float_mask]
-#             frac = (float_indices % 100) / 100
-#             lower_indices = (float_indices // 100).long()  # Remove the last two digits to get the base integer part
-#             upper_indices = lower_indices + 1  # The next integer
-#             labels[float_mask] = lower_indices
-#         inputs.update({
-#             'labels': labels,
-#             })
-#         return super(VideoLLaMA2Trainer, self).compute_loss(model, inputs, return_outputs)
             
         # Forward pass through the model
         input_ids = inputs.get('input_ids')
@@ -316,8 +303,9 @@ class VideoLLaMA2Trainer(Trainer):
 
         outputs = model(**inputs)
         logits = outputs.logits  # Directly access logits assuming it's always returned
-        loss = 0
+        loss = None
         if labels is not None:
+            loss = 0
             # Shift so that tokens < n predict n
             shift_logits = logits[..., :-1, :].contiguous()
             shift_labels = labels[..., 1:].contiguous()
@@ -340,7 +328,7 @@ class VideoLLaMA2Trainer(Trainer):
                     # Decode to get the predicted floating point values and logits for the Gumbel softmax
 #                     probs = F.gumbel_softmax(shift_logits[float_mask, model.float_token_id_start:model.float_token_id_end+1], tau=model.temperature, hard=True, dim=-1)
 #                     predicted_float = model.float_decode(float_hidden_states, probs)
-                    predicted_float = model.float_decode(float_hidden_states)
+                    predicted_float = model.model.float_tokenizer.decode(float_hidden_states).float()
                     shift_ground_float = model.token_to_float(shift_labels[float_mask].unsqueeze(-1))
 
                     # Compute MSE loss for the floating point predictions
@@ -349,25 +337,17 @@ class VideoLLaMA2Trainer(Trainer):
                     loss += mse_loss
 
                     # Softmax over the logits within the range
-                    probs = F.softmax(shift_logits[float_mask], dim=-1)
-
-                    # Prepare target indices for log-probability extraction
-                    target_log_probs = probs[:, model.float_token_id_start:model.float_token_id_end+1]
-
-                    # Compute the negative log likelihood loss
-                    nll_loss = -torch.mean(torch.log(target_log_probs.sum(-1)))
+                    log_probs = F.log_softmax(shift_logits[float_mask], dim=-1)
+                    target_log_probs = log_probs[:, model.float_token_id_start:model.float_token_id_end+1]
+                    nll_loss = -torch.sum(torch.logsumexp(target_log_probs, dim=-1)) / torch.sum(shift_labels != -100)
                     loss += nll_loss
 
             # Calculate Cross-Entropy Loss for the non-float part
             non_float_mask = ~float_mask
             if non_float_mask.any():
-                loss_fct = nn.CrossEntropyLoss()
-                loss += loss_fct(shift_logits[non_float_mask], shift_labels[non_float_mask])
+                loss_fct = nn.CrossEntropyLoss(reduction='sum')
+                loss += loss_fct(shift_logits[non_float_mask], shift_labels[non_float_mask])/ sum(shift_labels!=-100)
                 
-#             if shift_logits.device == torch.device('cuda:0'):
-#                 model.temperature = max(model.temperature - 0.05/4, 0.01)
-#                 print("Updating temp to", model.temperature)
-                    
             print(f"total loss: {loss.item():.2f}, nll_loss: {nll_loss.item():.2f}, mse loss: {mse_loss.item():.2f}")
         # Return outputs along with the loss if specified
         return (loss, outputs) if return_outputs else loss

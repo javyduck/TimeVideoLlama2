@@ -1,5 +1,4 @@
 #!/bin/bash
-
 # Environment Variables
 WORLD_SIZE=1
 NPROC_PER_NODE=8
@@ -31,7 +30,7 @@ torchrun --nnodes $WORLD_SIZE \
     --mm_projector_type stc_connector \
     --pretrain_mm_mlp_adapter ./checkpoints/VideoLLaMA2-7B-Base/mm_projector.bin \
     --model_name_or_path mistralai/Mistral-7B-Instruct-v0.2 \
-    --pretrain_model_name_or_path ${OUTP_DIR}/${WANDB_PROJECT}/pretrain_time_${RUN_NAME} \
+    --pretrain_model_name_or_path ./checkpoints/VideoLLaMA2-7B \
     --data_path   ${DATA_DIR}/final/time_conversation_bddx_train.json \
     --data_folder ${DATA_DIR}/BDDX_Processed/ \
     --mm_vision_select_layer -2 \
@@ -45,7 +44,7 @@ torchrun --nnodes $WORLD_SIZE \
     --tf32 True \
     --fp16 False \
     --output_dir ${OUTP_DIR}/${WANDB_PROJECT}/finetune_time_${RUN_NAME} \
-    --num_train_epochs 2 \
+    --num_train_epochs 5 \
     --per_device_train_batch_size $LOCAL_BATCH_SIZE \
     --per_device_eval_batch_size 4 \
     --gradient_accumulation_steps $GRADIENT_ACCUMULATION_STEPS \

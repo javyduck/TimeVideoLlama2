@@ -32,12 +32,12 @@ def main(args):
     model_name = get_model_name_from_path(args.model_path)
     tokenizer, model, processor, context_len = load_pretrained_model(args.model_path, None, model_name)
     model.eval()
+
     num_frames = model.config.num_frames if hasattr(model.config, "num_frames") else NUM_FRAMES
 
     processor = partial(process_video, aspect_ratio='pad', processor=processor, num_frames=num_frames)
     
     if getattr(model.config, "mm_use_time_token", False):
-        print("!!!!mm_use_time_token")
         tokenizer = TimeTokenizer(tokenizer)
         
     # print(model, tokenizer, processor)
@@ -69,7 +69,7 @@ def main(args):
             vp = vps[0]
         else:
             vp = vps
-        vp = os.path.join('/home/jiaweizhang/Nuro/VideoLLaMA2/video_process/BDDX_Test', vp)
+        vp = os.path.join('/home/jiaweizhang/Nuro/TimeVideoLLaMA2/video_process/BDDX_Test', vp)
         
         video_tensor = processor(vp)
         if type(video_tensor) is list:
