@@ -799,6 +799,7 @@ def train(attn_implementation=None):
             if model_args.mm_use_time_token:
                 config.float_token_id_start = tokenizer.float_token_id_start
                 config.float_token_id_end = tokenizer.float_token_id_end
+                config.range_tokens = tokenizer.range_tokens
                 
             model = Videollama2MistralForCausalLM.from_pretrained(
                 pretrain_model_name_or_path,
@@ -968,10 +969,10 @@ def train(attn_implementation=None):
     # select a Trainer
     trainer = VideoLLaMA2Trainer(model=model, tokenizer=tokenizer, args=training_args, **data_module)
     
-    if list(pathlib.Path(training_args.output_dir).glob("checkpoint-*")):
-        trainer.train(resume_from_checkpoint=True)
-    else:
-        trainer.train()
+#     if list(pathlib.Path(training_args.output_dir).glob("checkpoint-*")):
+#         trainer.train(resume_from_checkpoint=True)
+#     else:
+    trainer.train()
     trainer.save_state()
     
     model.config.use_cache = True

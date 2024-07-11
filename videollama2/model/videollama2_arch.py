@@ -314,16 +314,36 @@ class Videollama2MetaForCausalLM(ABC):
             if num_new_tokens:
                 self.resize_token_embeddings(len(tokenizer))
             
+#                 input_embeddings = self.get_input_embeddings().weight.data
+#                 output_embeddings = self.get_output_embeddings().weight.data
+                
+#                 input_embeddings_avg = input_embeddings[:-num_new_tokens].mean(
+#                     dim=0, keepdim=True)
+#                 output_embeddings_avg = output_embeddings[:-num_new_tokens].mean(
+#                     dim=0, keepdim=True)
+
+#                 input_embeddings[-num_new_tokens:] = input_embeddings_avg
+#                 output_embeddings[-num_new_tokens:] = output_embeddings_avg
+
+                def random_within_existing_range(embeddings, num_new_tokens):
+                    """Initialize new embeddings randomly within the range of existing embeddings using a fixed seed."""
+                    # Calculate the standard deviation and mean of the existing embeddings
+                    std_dev = embeddings[:-num_new_tokens].std(dim=0, keepdim=True)
+                    mean_val = embeddings[:-num_new_tokens].mean(dim=0, keepdim=True)
+
+                    # Generate random embeddings within the range defined by the existing ones
+                    random_embeddings = torch.randn((num_new_tokens, embeddings.size(1)), 
+                                                    dtype = embeddings.dtype, 
+                                                    device = embeddings.device) * std_dev + mean_val
+                    return random_embeddings
+
+                 # Assuming this is within a method of a model class
                 input_embeddings = self.get_input_embeddings().weight.data
                 output_embeddings = self.get_output_embeddings().weight.data
                 
-                input_embeddings_avg = input_embeddings[:-num_new_tokens].mean(
-                    dim=0, keepdim=True)
-                output_embeddings_avg = output_embeddings[:-num_new_tokens].mean(
-                    dim=0, keepdim=True)
-
-                input_embeddings[-num_new_tokens:] = input_embeddings_avg
-                output_embeddings[-num_new_tokens:] = output_embeddings_avg
+                # Initialize and directly assign new embeddings on the same device
+                input_embeddings[-num_new_tokens:] = random_within_existing_range(input_embeddings, num_new_tokens)
+                output_embeddings[-num_new_tokens:] = random_within_existing_range(output_embeddings, num_new_tokens)
                 
             if model_args.tune_time_token:
                 for p in self.get_input_embeddings().parameters():

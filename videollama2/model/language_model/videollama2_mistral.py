@@ -28,19 +28,19 @@ from transformers.generation.utils import *
 from ..videollama2_arch import Videollama2MetaModel, Videollama2MetaForCausalLM
 
 class TimeTokenizer(nn.Module):
-    def __init__(self, num_float_tokens, input_dim=4096, hidden_dim = 200, dropout_rate = 0.1):
+    def __init__(self, num_float_tokens, input_dim=4096, dropout_rate = 0.1):
         super(TimeTokenizer, self).__init__()
         # Learnable normalization parameters
-#         self.scale = nn.Parameter(torch.tensor(1.0))
-#         self.shift = nn.Parameter(torch.tensor(0.0))
+#         self.scale = nn.Parameter(torch.tensor([[1.0]]))
+#         self.shift = nn.Parameter(torch.tensor([[0.0]]))
 
         # Encoder MLP
         self.encoder = nn.Sequential(
-            nn.Linear(1, hidden_dim),
+            nn.Linear(1, num_float_tokens),
             nn.ReLU(),
-            nn.Linear(hidden_dim, hidden_dim),
+            nn.Linear(num_float_tokens, int(num_float_tokens * 2)),
             nn.ReLU(),
-            nn.Linear(hidden_dim, num_float_tokens)
+            nn.Linear(int(num_float_tokens * 2), num_float_tokens)
         )
         
         # Decoder MLP
@@ -55,16 +55,18 @@ class TimeTokenizer(nn.Module):
         )
         
     def encode(self, x):
+        
         # Normalize input using affine transformation
-#         x = (x - self.shift) / self.scale
+#         x = x * self.scale + self.shift
         x = self.encoder(x)
         return F.softmax(x, dim=-1)
 
     def decode(self, x):
         x = self.decoder(x)
+#         x = (x - self.shift) / self.scale
         # Denormalize output using the inverse of the affine transformation
-        return x # * self.scale + self.shift
-
+        return x
+    
     def forward(self, x):
         encoded = self.encode(x)
         decoded = self.decode(encoded)
@@ -95,7 +97,7 @@ class Videollama2MistralForCausalLM(MistralForCausalLM, Videollama2MetaForCausal
             self.float_token_id_start = config.float_token_id_start
             self.float_token_id_end = config.float_token_id_end
             self.model.float_tokenizer = TimeTokenizer(self.float_token_id_end-self.float_token_id_start+1)
-            self.range_tokens = [f"{x:.2f}" for x in np.linspace(-200, 200, 20+1)]
+            self.range_tokens = config.range_tokens
             self.sorted_tokens = sorted(float(val) for val in self.range_tokens)
             
         # Initialize weights and apply final processing
@@ -538,22 +540,22 @@ class Videollama2MistralForCausalLM(MistralForCausalLM, Videollama2MetaForCausal
 #                 token_ids = torch.tensor(token_ids, dtype=torch.long).to(self.model.device)
 
             # Identify the indices with floating token IDs
-            is_float = (self.float_token_id_start * 100 <= token_ids) & (token_ids <= self.float_token_id_end * 100)
+            is_float = (self.float_token_id_start <= token_ids) & (token_ids <= self.float_token_id_end)
             
             # Process floating token indices
             if is_float.any():
                 # Allocate a tensor for embeddings that matches the input tokens
                 embeddings = torch.zeros(*token_ids.shape, 4096, dtype = self.model.embed_tokens.weight.dtype, device=token_ids.device)
-
+                
                 # Handle non-floating tokens normally
                 if (~is_float).any():
-                    embeddings[~is_float] += self.model.embed_tokens(token_ids[~is_float])
+                    embeddings[~is_float] += self.model.embed_tokens(token_ids[~is_float].long())
 
                 # Handle floating tokens
                 float_indices = token_ids[is_float]
-                float_input = self.token_to_float(float_indices).to(self.model.embed_tokens.weight.dtype)
+                float_input = self.token_to_float(float_indices).unsqueeze(-1).to(self.model.embed_tokens.weight.dtype)
                 
-                weights = self.model.float_tokenizer.encode(float_input.unsqueeze(-1))  # Get linear weights for each base embedding
+                weights = self.model.float_tokenizer.encode(float_input)  # Get linear weights for each base embedding
                 # Get the base embeddings
                 embedding_float_base = self.model.embed_tokens(torch.arange(self.float_token_id_start, self.float_token_id_end + 1, device=self.model.device))
                 
@@ -562,39 +564,40 @@ class Videollama2MistralForCausalLM(MistralForCausalLM, Videollama2MetaForCausal
                 embeddings[is_float] += float_embedding
                 return embeddings
             else:
-                return self.model.embed_tokens(token_ids)
+                return self.model.embed_tokens(token_ids.long())
         else:
-            return self.model.embed_tokens(token_ids)
+            return self.model.embed_tokens(token_ids.long())
 
-        
     def token_to_float(self, token_ids):
         device = token_ids.device
-        # Ensure token_ids is a 2D tensor even if it's not batched
-        if token_ids.ndim == 1:
-            token_ids = token_ids.unsqueeze(0)  # Reshape to [1, n]
+        original_shape = token_ids.shape
+
+        # Reshape token_ids to a one-dimensional array
+        token_ids = token_ids.view(-1)
 
         # Calculate base indices for each token
-        base_ids = (token_ids // 100).long() - self.float_token_id_start
+        base_ids = token_ids.long() - self.float_token_id_start
 
         # Collect lower and upper bounds from pre-defined ranges
-        lower_bounds = torch.tensor([float(self.range_tokens[idx]) for idx in base_ids.flatten()], device=device).view_as(base_ids)
-        upper_bounds = torch.tensor([float(self.range_tokens[min(idx + 1, len(self.range_tokens) - 1)]) for idx in base_ids.flatten()], device=device).view_as(base_ids)
+        lower_bounds = torch.tensor([float(self.range_tokens[idx]) for idx in base_ids], dtype = torch.float32, device=device)
+        upper_bounds = torch.tensor([float(self.range_tokens[min(idx + 1, len(self.range_tokens) - 1)]) for idx in base_ids], dtype = torch.float32, device=device)
 
         # Calculate fractional parts for interpolation
-        fractional_parts = (token_ids % 100).float() / 100
+        fractional_parts = token_ids.frac()
 
         # Perform interpolation
         interpolated_floats = lower_bounds + fractional_parts * (upper_bounds - lower_bounds)
 
-        # Match the original shape of token_ids
-        if interpolated_floats.ndim == 2 and interpolated_floats.shape[0] == 1:
-            interpolated_floats = interpolated_floats.squeeze(0)  # Remove batch dimension if it was originally unbatched
+        # Reshape interpolated_floats to match the original shape of token_ids
+        interpolated_floats = interpolated_floats.view(original_shape)
 
+        # Round the result to two decimal places
         return interpolated_floats
+
     
     def float_to_token(self, floats):
         # Clip the input values to be within the specified range
-        floats_clipped = torch.clamp(floats, min=-180, max=180)
+        floats_clipped = torch.clamp(floats, min=float(self.range_tokens[0]), max=float(self.range_tokens[-1]))
 
         # Convert range_tokens to a tensor if not already
         range_tokens_floats = [float(token) for token in self.range_tokens]
@@ -613,7 +616,7 @@ class Videollama2MistralForCausalLM(MistralForCausalLM, Videollama2MetaForCausal
 
         # Compute the interpolated token indices
         fractional_part = (floats_clipped - lower_tokens) / (upper_tokens - lower_tokens)
-        interpolated_indices = (100 * (lower_indices + fractional_part)).long()
+        interpolated_indices = lower_indices + fractional_part
 
         return interpolated_indices
 

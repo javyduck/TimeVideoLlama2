@@ -507,7 +507,7 @@ def tokenizer_MMODAL_token(prompt, tokenizer, MMODAL_token_index=IMAGE_TOKEN_IND
 
     if return_tensors is not None:
         if return_tensors == 'pt':
-            return torch.tensor(input_ids, dtype=torch.long)
+            return torch.tensor(input_ids, dtype=torch.float32)
 #             return torch.FloatTensor(input_ids)
         raise ValueError(f'Unsupported tensor type: {return_tensors}')
     return input_ids
@@ -556,7 +556,7 @@ class KeywordsStoppingCriteria(StoppingCriteria):
         return all(outputs)
     
 class TimeTokenizer:
-    def __init__(self, tokenizer, range_min=-200, range_max=200, bins=20):
+    def __init__(self, tokenizer, range_min=-50, range_max=50, bins=50):
         
         # Store the original tokenizer, the legacy has to be set to False for correct decoding
         tokenizer.legacy = False
@@ -592,6 +592,20 @@ class TimeTokenizer:
         self.model_max_length = tokenizer.model_max_length
         self.padding_side = tokenizer.padding_side
         
+    def __call__(self, text, **kwargs):
+        
+        return_tensors = kwargs.pop('return_tensors', None)  # Default to False if not specified
+            
+        # Encoding the text
+        new_input_ids = self.encode(text, **kwargs)
+        
+        # Generating an attention mask that matches the new input IDs
+        attention_mask =[1] * len(new_input_ids)
+        if return_tensors == 'pt':
+            new_input_ids = torch.tensor(new_input_ids, dtype=torch.float32)
+            
+        return SimpleNamespace(**{'input_ids': new_input_ids, 'attention_mask': None})
+    
     def encode(self, text, **kwargs):
 
         # Split text into parts to handle both special tags and general text
@@ -644,28 +658,31 @@ class TimeTokenizer:
         return new_input_ids
 
     def process_inner_text(self, text):
-        
-        # Extract all numbers from the text as a numpy array for vectorized operations
-        numbers = np.array([float(num) for num in re.split(r'\s*,\s*', text.strip('[]')) if num]).clip(self.range_min, self.range_max)
+        # Extract all numbers from the text as a PyTorch tensor for vectorized operations
+        floats = torch.tensor([float(num) for num in re.split(r'\s*,\s*', text.strip('[]')) if num], dtype = torch.float32)
+        # Clip the input values to be within the specified range
+        floats_clipped = torch.clamp(floats, min=self.range_min, max=self.range_max)
 
-        # Find the indices for each number using vectorized search
-        positions = np.searchsorted(self.sorted_tokens, numbers, side='right') - 1
-        positions = np.clip(positions, 0, len(self.sorted_tokens) - 2)  # Ensure indices are within the bounds
+        # Convert range_tokens to a tensor if not already
+        range_tokens_floats = [float(token) for token in self.range_tokens]
+        range_tokens_tensor = torch.tensor(range_tokens_floats, dtype=torch.float32)
+
+        # Find the indices for each number using searchsorted
+        positions = torch.searchsorted(range_tokens_tensor, floats_clipped, right=True) - 1
+        positions = torch.clamp(positions, 0, len(self.range_tokens) - 2)  # Ensure indices are within the bounds
 
         # Lower and upper token values
-        lower_tokens = np.array(self.range_tokens)[positions]
-        upper_tokens = np.array(self.range_tokens)[positions + 1]
+        lower_tokens = range_tokens_tensor[positions]
+        upper_tokens = range_tokens_tensor[positions + 1]
 
         # Calculate the interpolated indices
         lower_indices = self.float_token_id_start + positions
-        upper_indices = self.float_token_id_start + positions + 1
 
         # Compute the interpolated token indices
-        interpolated_indices = lower_indices + ((numbers - lower_tokens.astype(float)) / 
-                                                (upper_tokens.astype(float) - lower_tokens.astype(float))) * (upper_indices - lower_indices)
-#         return  interpolated_indices.tolist()
-        return [int(round(num * 100)) for num in interpolated_indices.tolist()]
+        fractional_part = (floats_clipped - lower_tokens) / (upper_tokens - lower_tokens)
+        interpolated_indices = lower_indices + fractional_part
 
+        return interpolated_indices.tolist()
 
     def batch_decode(self, sequences, **kwargs):
         return [
@@ -681,10 +698,9 @@ class TimeTokenizer:
             return ""
         
         # Ensure input is in a consistent format (using PyTorch for potential GPU support)
-        if isinstance(token_ids, list):
-            token_ids = torch.tensor(token_ids)
-        elif isinstance(token_ids, np.ndarray):
-            token_ids = torch.tensor(token_ids)
+        if isinstance(token_ids, list) or isinstance(token_ids, np.ndarray):
+            token_ids = torch.tensor(token_ids, dtype=torch.float32)
+        # No need to convert if already a torch tensor
         # No need to convert if already a torch tensor
         
         if token_ids.device.type == 'cuda':
@@ -693,7 +709,7 @@ class TimeTokenizer:
             device = torch.device('cpu')
         
         # Create a mask for float tokens using torch operations
-        is_float = (self.float_token_id_start * 100 <= token_ids) & (token_ids <= self.float_token_id_end * 100)
+        is_float = (self.float_token_id_start <= token_ids) & (token_ids <= self.float_token_id_end)
 
         # Find boundaries of chunks by changes in the mask
         diff = torch.diff(is_float.to(torch.int), dim=0)
@@ -707,12 +723,12 @@ class TimeTokenizer:
             if is_float[chunk_indices[i]]:
 
                 # Interpolate float values
-                base_ids = ((chunk // 100).long() - self.float_token_id_start).long()
+                base_ids = chunk.long() - self.float_token_id_start
                 lower_bounds = torch.tensor([float(self.range_tokens[idx]) for idx in base_ids], device=device)
                 upper_bounds = torch.tensor([float(self.range_tokens[min(idx + 1, len(self.range_tokens) - 1)]) for idx in base_ids], device=device)
-                fractional_parts = (chunk % 100) / 100
+                fractional_parts = chunk.frac()
                 interpolated_floats = lower_bounds + fractional_parts * (upper_bounds - lower_bounds)
-                float_strs = [f"{num:.2f}" for num in interpolated_floats.cpu().numpy()]
+                float_strs = [f"{num.item():.2f}" for num in interpolated_floats]
                 decoded_parts.append(", ".join(float_strs))
             else:
                 if isinstance(chunk, list):
@@ -727,19 +743,5 @@ class TimeTokenizer:
     def save_pretrained(self, output_dir):
         self._tokenizer.save_pretrained(output_dir)
         
-    def __call__(self, text, **kwargs):
-        
-        return_tensors = kwargs.pop('return_tensors', None)  # Default to False if not specified
-            
-        # Encoding the text
-        new_input_ids = self.encode(text, **kwargs)
-        
-        # Generating an attention mask that matches the new input IDs
-        attention_mask =[1] * len(new_input_ids)
-        if return_tensors == 'pt':
-            new_input_ids = torch.tensor(new_input_ids, dtype=torch.long)
-            
-        return SimpleNamespace(**{'input_ids': new_input_ids, 'attention_mask': None})
-
     def __len__(self):
         return len(self._tokenizer)

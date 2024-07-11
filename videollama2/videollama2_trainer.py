@@ -16,7 +16,8 @@ from transformers.trainer import (
     logger,
     TRAINER_STATE_NAME,
 )
-
+from collections.abc import Mapping
+from typing import TYPE_CHECKING, Any, Callable, Dict, List, Optional, Tuple, Union
 
 def maybe_zero_3(param, ignore_status=False, name=None):
     from deepspeed import zero
@@ -317,8 +318,23 @@ class VideoLLaMA2Trainer(Trainer):
             # Ensure tensors are on the same device
             shift_labels = shift_labels.to(shift_logits.device)
             
+            # Assuming shift_logits and shift_labels are already defined, as well as model.float_token_id_start and model.float_token_id_end
+            loss_fct = nn.CrossEntropyLoss(reduction='none')  # Use 'none' to retain the individual losses
+
+            # Compute loss for all tokens
+            all_losses = loss_fct(shift_logits, shift_labels.long())
+            fct_loss = all_losses[shift_labels != -100].mean()
+            
+            # Calculate loss for float tokens
+            with torch.no_grad():
+                float_mask = (model.float_token_id_start <= shift_labels) & (shift_labels <= model.float_token_id_end)
+                # Apply mask and calculate loss only for float tokens, then get the scalar value
+                float_loss = all_losses[float_mask].mean().item()
+            print(shift_logits[float_mask].argmax(dim=-1).view(-1)[::5] - model.float_token_id_start)
+            loss += fct_loss
+            
             if getattr(model, 'mm_use_time_token', False):
-                float_mask = (model.float_token_id_start * 100 <= shift_labels) & (shift_labels <= model.float_token_id_end * 100)
+                float_mask = (model.float_token_id_start <= shift_labels) & (shift_labels <= model.float_token_id_end)
 
                 if float_mask.any():
                     last_hidden_state = outputs.hidden_states[-1]
@@ -334,21 +350,43 @@ class VideoLLaMA2Trainer(Trainer):
                     # Compute MSE loss for the floating point predictions
                     loss_mse = nn.MSELoss()
                     mse_loss = loss_mse(predicted_float, shift_ground_float)
-                    loss += mse_loss
+                    loss += mse_loss * max((1 - float_loss / 2.00), 0)
 
-                    # Softmax over the logits within the range
-                    log_probs = F.log_softmax(shift_logits[float_mask], dim=-1)
-                    target_log_probs = log_probs[:, model.float_token_id_start:model.float_token_id_end+1]
-                    nll_loss = -torch.sum(torch.logsumexp(target_log_probs, dim=-1)) / torch.sum(shift_labels != -100)
-                    loss += nll_loss
+#                     # Softmax over the logits within the range
+#                     log_probs = F.log_softmax(shift_logits[float_mask], dim=-1)
+#                     print(log_probs.argmax(dim=-1).view(-1)[:10] - model.float_token_id_start)
+#                     target_log_probs = log_probs[:, model.float_token_id_start:model.float_token_id_end+1]
+#                     nll_loss = -torch.mean(torch.logsumexp(target_log_probs, dim=-1))
+#                     loss += nll_loss * 0.5
 
-            # Calculate Cross-Entropy Loss for the non-float part
-            non_float_mask = ~float_mask
-            if non_float_mask.any():
-                loss_fct = nn.CrossEntropyLoss(reduction='sum')
-                loss += loss_fct(shift_logits[non_float_mask], shift_labels[non_float_mask])/ sum(shift_labels!=-100)
-                
-            print(f"total loss: {loss.item():.2f}, nll_loss: {nll_loss.item():.2f}, mse loss: {mse_loss.item():.2f}")
+                    print(f"fct loss: {fct_loss.item():.2f}, float loss: {float_loss:.2f}, mse loss: {mse_loss.item():.2f}")
+            else:
+                print(f"fct loss: {fct_loss.item():.2f}")
+#                 shift_labels[float_mask] = -100
+#             loss_fct = nn.CrossEntropyLoss()
+#             fct_loss = loss_fct(shift_logits, shift_labels)
+#             loss += fct_loss
+#             print(f"fct loss: {fct loss.item():.2f}")
+            
         # Return outputs along with the loss if specified
         return (loss, outputs) if return_outputs else loss
 
+    def _prepare_input(self, data: Union[torch.Tensor, Any]) -> Union[torch.Tensor, Any]:
+        """
+        Prepares one `data` before feeding it to the model, be it a tensor or a nested list/dictionary of tensors.
+        """
+        if isinstance(data, Mapping):
+            return type(data)({k: self._prepare_input(v) for k, v in data.items()})
+        elif isinstance(data, (tuple, list)):
+            return type(data)(self._prepare_input(v) for v in data)
+        elif isinstance(data, torch.Tensor):
+            kwargs = {"device": self.args.device}
+            if (data > 10000).any():
+                pass
+            elif self.is_deepspeed_enabled and (torch.is_floating_point(data) or torch.is_complex(data)):
+                # NLP models inputs are int/uint and those get adjusted to the right dtype of the
+                # embedding. Other models such as wav2vec2's inputs are already float and thus
+                # may need special handling to match the dtypes of the model
+                kwargs.update({"dtype": self.accelerator.state.deepspeed_plugin.hf_ds_config.dtype()})
+            return data.to(**kwargs)
+        return data
