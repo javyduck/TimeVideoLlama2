@@ -342,8 +342,16 @@ class Videollama2MetaForCausalLM(ABC):
                 output_embeddings = self.get_output_embeddings().weight.data
                 
                 # Initialize and directly assign new embeddings on the same device
-                input_embeddings[-num_new_tokens:] = random_within_existing_range(input_embeddings, num_new_tokens)
-                output_embeddings[-num_new_tokens:] = random_within_existing_range(output_embeddings, num_new_tokens)
+                input_embeddings = self.get_input_embeddings().weight.data
+                
+                input_embeddings_avg = input_embeddings[:-num_new_tokens].mean(
+                    dim=0, keepdim=True)
+                input_embeddings[-num_new_tokens:-num_new_tokens+2] = input_embeddings_avg
+                input_embeddings[-num_new_tokens+2:] = random_within_existing_range(input_embeddings, num_new_tokens)
+                output_embeddings_avg = output_embeddings[:-num_new_tokens].mean(dim=0, keepdim=True)
+                output_embeddings[-num_new_tokens:] = output_embeddings_avg
+                
+#                 output_embeddings[-num_new_tokens:] = random_within_existing_range(output_embeddings, num_new_tokens)
                 
             if model_args.tune_time_token:
                 for p in self.get_input_embeddings().parameters():

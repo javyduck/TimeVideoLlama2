@@ -91,7 +91,10 @@ def main(args):
             conv.append_message(conv.roles[0], inp)
             conv.append_message(conv.roles[1], None)
             prompt = conv.get_prompt()
-            input_ids = tokenizer_MMODAL_token(prompt, tokenizer, modal_index, return_tensors='pt').unsqueeze(0).cuda()
+            try:
+                input_ids = tokenizer_MMODAL_token(prompt, tokenizer, modal_index, return_tensors='pt').unsqueeze(0).cuda()
+            except:
+                break
             attention_masks = input_ids.ne(tokenizer.pad_token_id).long().cuda()
 
             stop_str = conv.sep if conv.sep_style in [SeparatorStyle.SINGLE] else conv.sep2
