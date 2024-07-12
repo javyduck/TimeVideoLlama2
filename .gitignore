@@ -23,9 +23,6 @@ temp*/
 .DS_Store
 3rd_parties
 
-# jupyter
-.ipynb_checkpoints
-*.ipynb
 
 # DevContainer
 !.devcontainer/*
